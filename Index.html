@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DARK-PATH PAIRING SITE // link device</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="bg-image"></div>
+  <div class="bg-overlay"></div>
+  <div class="scanlines"></div>
+  <div class="grid-fx"></div>
+
+  <div class="card">
+
+    <div class="term-bar">
+      <span class="dot red"></span>
+      <span class="dot yellow"></span>
+      <span class="dot green"></span>
+      <span class="term-path">~/darkpath-pair/session.sh</span>
+    </div>
+
+    <div class="card-body">
+      <div class="bot-icon">☠️</div>
+      <h1 class="glitch" data-text="DARK-PATH PAIRING SITE">DARK-PATH PAIRING SITE</h1>
+      <p class="subtitle">
+        <span class="prompt">$</span> link_device--whatsapp
+        
+        <span class="cursor">▌</span>
+      </p>
+
+      <form id="pairForm">
+        <label class="field-label" for="phoneInput">phone_number</label>
+        <input
+          type="tel"
+          id="phoneInput"
+          placeholder="e.g. 2567xxxxxxx"
+          required
+        />
+        <button type="submit" id="generateBtn">
+          <span class="btn-label">Generate Pair Code</span>
+          <span class="btn-key">↵</span>
+        </button>
+      </form>
+
+      <div id="status" class="status hidden">
+        <span class="spinner"></span>
+        requesting pair code from whatsapp<span class="dots"><span>.</span><span>.</span><span>.</span></span>
+      </div>
+
+      <div id="codeBox" class="code-box hidden">
+        <span class="code-label">PAIR_CODE</span>
+        <span id="codeText"></span>
+        <button id="copyBtn">copy</button>
+      </div>
+
+      <p class="instructions">
+        WhatsApp <span class="arrow">→</span> Linked Devices <span class="arrow">→</span> Link with phone number
+      </p>
+    </div>
+
+    <footer>© 2026 ROJA GRAPHIX <span class="sep">//</span> DARK-PATH <span class="sep">//</span> all rights reserved</footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
+
