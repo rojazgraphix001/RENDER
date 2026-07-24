@@ -1,276 +1,244 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DARK-PATH PAIR</title>
+// ================================================
+//  DARK-PATH PAIRING SITE 
+//  Developed by ROJA GRAPHIX 
+// ================================================
 
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+const express = require('express')
+const cors = require('cors')
+const path = require('path')
+const fs = require('fs')
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  DisconnectReason,
+  delay,
+  makeCacheableSignalKeyStore,
+} = require('@whiskeysockets/baileys')
+const pino = require('pino')
 
-    * {
-      box-sizing: border-box;
+const app = express()
+const PORT = process.env.PORT || 3000
+
+app.use(express.json())
+app.use(cors())
+app.use(express.static(path.join(__dirname, 'public')))
+
+
+// ====================== SSE 
+app.get('/events', (req, res) => {
+  const sessionId = req.query.sessionId
+  if (!sessionId) return res.status(400).end()
+
+  res.setHeader('Content-Type', 'text/event-stream')
+ 
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  if (!sseClients.has(sessionId)) sseClients.set(sessionId, [])
+  sseClients.get(sessionId).push(res)
+
+  const keepAlive = setInterval(() => res.write(': ping\n\n'), 20000)
+
+  req.on('close', () => {
+    clearInterval(keepAlive)
+    const clients = sseClients.get(sessionId)
+    if (clients) {
+      const idx = clients.indexOf(res)
+      if (idx > -1) clients.splice(idx, 1)
+    }
+  })
+})
+
+//  SSE HELPER ======================
+function sendToClients(sessionId, data) {
+  const clients = sseClients.get(sessionId) || []
+  clients.forEach(client => {
+    try {
+      client.write(`data: ${JSON.stringify(data)}\n\n`)
+    } catch (_) 
+  })
+}
+
+//  CORE PAIRING FUNCTION 
+async function startPairingSession(sessionId, phone, res) {
+  const sessionDir = path.join(__dirname, 'sessions', sessionId)
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true })
+
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir)
+  const { version } = await fetchLatestBaileysVersion()
+
+  console.log(`[${sessionId}] 🚀 Starting socket for +${phone}`)
+
+  const sock = makeWASocket({
+    version,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+    },
+    browser: ['Ubuntu', 'Chrome', '20.0.04'],
+    markOnlineOnConnect: false,
+    defaultQueryTimeoutMs: 120000,
+    connectTimeoutMs: 120000,
+    keepAliveIntervalMs: 20000,
+    syncFullHistory: false,
+  })
+
+  const session = {
+    sock,
+    phone,
+    sessionDir,
+    pairingRequested: false,
+    paired: false,
+    codeGenerated: false,
+    reconnectAttempts: 0,
+    maxReconnects: 5,
+    cleanupTimer: null,
+  }
+
+  activeSessions.set(sessionId, session)
+
+  // Request pairing code
+  setTimeout(async () => {
+    if (session.pairingRequested || session.paired || state.creds.registered) return
+    session.pairingRequested = true
+    console.log(`[${sessionId}] 🔑 Requesting pairing code for +${phone}`)
+    try {
+      let code = await sock.requestPairingCode(phone)
+      code = code?.match(/.{1,4}/g)?.join('-') || code
+      session.codeGenerated = true
+      console.log(`[${sessionId}] ✅ Pairing code generated: ${code}`)
+      sendToClients(sessionId, { code })
+    } catch (err) {
+      console.error(`[${sessionId}] ❌ requestPairingCode failed: ${err.message}`)
+      session.pairingRequested = false
+      sendToClients(sessionId, { error: 'Could not get pairing code. Retrying...' })
+    }
+  }, 3000)
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect } = update
+
+    if (connection) {
+      console.log(`[${sessionId}] connection.update -> ${connection}`)
     }
 
-    body {
-      font-family: 'Inter', system-ui;
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
+    if (connection === 'open') {
+      session.paired = true
+      session.reconnectAttempts = 0
+      console.log(`[${sessionId}] 🎉 Successfully paired for +${phone}`)
+      sendToClients(sessionId, { status: 'paired', message: 'Pairing successful! Sending session file...' })
 
-      /* iOS glass gradient */
-      background: linear-gradient(135deg, #0f172a, #1e3a8a, #0ea5e9);
-      overflow-x: hidden;
-      color: white;
-    }
-
-    /* floating butterflies */
-    body::before, body::after {
-      content: "🦋";
-      position: absolute;
-      font-size: 40px;
-      opacity: 0.6;
-      animation: float 12s infinite linear;
-    }
-
-    body::after {
-      left: 80%;
-      animation-delay: 6s;
-    }
-
-    @keyframes float {
-      0% { transform: translateY(100vh) rotate(0deg); }
-      100% { transform: translateY(-10vh) rotate(360deg); }
-    }
-
-    .card {
-      max-width: 460px;
-      width: 90%;
-      backdrop-filter: blur(20px);
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 28px;
-      padding: 35px 25px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-      border: 1px solid rgba(255,255,255,0.15);
-      text-align: center;
-    }
-
-    .logo {
-      width: 90px;
-      height: 90px;
-      border-radius: 50%;
-      margin: 0 auto 15px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 40px;
-
-      background: rgba(255,255,255,0.15);
-      backdrop-filter: blur(10px);
-      box-shadow: 0 8px 30px rgba(0,0,0,0.3);
-    }
-
-    h1 {
-      margin: 0 0 8px;
-      font-size: 26px;
-      font-weight: 600;
-    }
-
-    p {
-      color: rgba(255,255,255,0.7);
-      margin-bottom: 25px;
-    }
-
-    input {
-      width: 100%;
-      padding: 16px;
-      font-size: 17px;
-      border-radius: 14px;
-      border: none;
-      outline: none;
-      text-align: center;
-      margin-bottom: 20px;
-
-      background: rgba(255,255,255,0.12);
-      color: white;
-      backdrop-filter: blur(10px);
-    }
-
-    input::placeholder {
-      color: rgba(255,255,255,0.6);
-    }
-
-    button {
-      width: 100%;
-      padding: 16px;
-      border-radius: 14px;
-      border: none;
-      font-size: 17px;
-      font-weight: 600;
-      cursor: pointer;
-
-      background: linear-gradient(135deg, #3b82f6, #0ea5e9);
-      color: white;
-      box-shadow: 0 10px 25px rgba(59,130,246,0.5);
-      transition: 0.3s;
-    }
-
-    button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 15px 30px rgba(59,130,246,0.7);
-    }
-
-    .loader {
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      margin: 30px 0;
-    }
-
-    .spinner {
-      width: 50px;
-      height: 50px;
-      border: 4px solid rgba(255,255,255,0.2);
-      border-top: 4px solid #38bdf8;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-bottom: 15px;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .code-box {
-      background: rgba(255,255,255,0.1);
-      border-radius: 18px;
-      padding: 25px 15px;
-      font-size: 30px;
-      letter-spacing: 10px;
-      font-weight: 600;
-      margin: 20px 0;
-      backdrop-filter: blur(10px);
-    }
-
-    .copy-btn {
-      background: linear-gradient(135deg, #22c55e, #4ade80);
-      margin-top: 10px;
-    }
-
-    footer {
-      margin-top: 30px;
-      font-size: 13px;
-      color: rgba(255,255,255,0.6);
-      text-align: center;
-    }
-
-    .error {
-      color: #fb7185;
-      margin-top: 15px;
-      font-weight: 500;
-    }
-
-  </style>
-</head>
-
-<body>
-
-  <div class="card">
-    <div class="logo">🤖</div>
-    <h1>DARK PATH</h1>
-    <p>Pair Code • Link your WhatsApp device</p>
-
-    <input type="text" id="phone" placeholder="256745626308" required>
-
-    <button onclick="generatePairCode()">🔑 Generate Pair Code</button>
-
-    <div id="loader" class="loader">
-      <div class="spinner"></div>
-      <strong>Requesting pair code...</strong>
-      <small style="opacity:0.7;">5–20 seconds</small>
-    </div>
-
-    <div id="result" style="display:none;">
-      <div class="code-box" id="codeDisplay">••••-••••-••••</div>
-      <button class="copy-btn" onclick="copyCode()">📋 Copy Code</button>
-      <small style="opacity:0.7; display:block; margin-top:15px;">
-        WhatsApp → Linked Devices → Link with phone number
-      </small>
-    </div>
-
-    <div id="errorMsg" class="error" style="display:none;"></div>
-  </div>
-
-  <footer>
-    ©️ 2026ROJAZ | DARK-PATH<br>
-    All rights reserved 🦋
-  </footer>
-
-  <script>
-    let currentSessionId = null;
-    let currentCode = '';
-
-    async function generatePairCode() {
-      const phone = document.getElementById('phone').value.trim();
-      if (!phone || phone.length < 9) {
-        showError('Please enter a valid number (e.g. 256781631700)');
-        return;
-      }
-
-      document.getElementById('result').style.display = 'none';
-      document.getElementById('errorMsg').style.display = 'none';
-      const loader = document.getElementById('loader');
-      loader.style.display = 'flex';
-
-      const res = await fetch('/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone })
-      });
-
-      const data = await res.json();
-      if (!data.success) {
-        loader.style.display = 'none';
-        showError(data.error || 'Failed to start pairing');
-        return;
-      }
-
-      currentSessionId = data.sessionId;
-
-      const evtSource = new EventSource(`/events?sessionId=${currentSessionId}`);
-      evtSource.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        loader.style.display = 'none';
-
-        if (msg.error) {
-          showError(msg.error);
-        } else if (msg.code) {
-          currentCode = msg.code;
-          document.getElementById('codeDisplay').textContent = msg.code;
-          document.getElementById('result').style.display = 'block';
+      try {
+        const credsPath = path.join(sessionDir, 'creds.json')
+        if (fs.existsSync(credsPath)) {
+          const buffer = fs.readFileSync(credsPath)
+          await sock.sendMessage(phone + '@s.whatsapp.net', {
+            document: buffer,
+            mimetype: 'application/json',
+            fileName: 'creds.json',
+            caption:
+              '✅ *DARK PATH MD SESSION FILE*\n\n' +
+              'Pairing successful!\n' +
+              'Save this creds.json to your bot /session folder.\n\n' +
+              'Made with love by ROJAZ 2026 🔥'
+          })
+          sendToClients(sessionId, { status: 'done', message: 'Session file sent to your WhatsApp!' })
         }
-      };
+      } catch (e) {
+        console.error(`[${sessionId}] ❌ Failed to send creds: ${e.message}`)
+      }
+
+      session.cleanupTimer = setTimeout(() => cleanupSession(sessionId), 15000)
     }
 
-    function showError(text) {
-      const err = document.getElementById('errorMsg');
-      err.textContent = text;
-      err.style.display = 'block';
-    }
+    if (connection === 'close') {
+      const status = lastDisconnect?.error?.output?.statusCode
+      console.log(`[${sessionId}] ⚠️ Connection closed | Status: ${status}`)
 
-    function copyCode() {
-      if (!currentCode) return;
-      navigator.clipboard.writeText(currentCode).then(() => {
-        const btn = document.querySelector('.copy-btn');
-        const original = btn.textContent;
-        btn.textContent = '✅ Copied!';
-        setTimeout(() => { btn.textContent = original; }, 2000);
-      });
-    }
-  </script>
+      if (status === DisconnectReason.loggedOut) {
+        console.log(`[${sessionId}] 🚫 Logged out - not reconnecting`)
+        sendToClients(sessionId, { error: 'Session logged out. Please try again.' })
+        cleanupSession(sessionId)
+        return
+      }
 
-</body>
-</html>
+      if (session.paired) {
+        console.log(`[${sessionId}] ✅ Already paired - close is fine`)
+        return
+      }
+
+      if (session.reconnectAttempts < session.maxReconnects) {
+        session.reconnectAttempts++
+        const waitMs = session.reconnectAttempts * 3000
+        console.log(`[${sessionId}] ♻️ Reconnecting (${session.reconnectAttempts}/${session.maxReconnects}) in ${waitMs / 1000}s...`)
+        sendToClients(sessionId, { status: 'reconnecting', attempt: session.reconnectAttempts })
+
+        await delay(waitMs)
+
+        try { sock.end() } catch (_) {}
+        activeSessions.delete(sessionId)
+
+        startPairingSession(sessionId, phone, null)
+      } else {
+        console.log(`[${sessionId}] ❌ Max reconnects reached`)
+        sendToClients(sessionId, { error: 'Connection failed after multiple retries. Please try again.' })
+        cleanupSession(sessionId)
+      }
+    }
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+
+  if (!session.cleanupTimer) {
+    session.cleanupTimer = setTimeout(() => {
+      if (!session.paired) {
+        console.log(`[${sessionId}] ⏰ Timeout - cleaning up`)
+        sendToClients(sessionId, { error: 'Timed out. Please try again.' })
+        cleanupSession(sessionId)
+      }
+    }, 240000)
+  }
+}
+
+// ====================== GENERATE ======================
+app.post('/generate', async (req, res) => {
+  const { phone } = req.body
+  if (!phone || phone.length < 9) {
+    return res.status(400).json({ error: 'Invalid phone number' })
+  }
+
+  const cleanPhone = phone.replace(/[^0-9]/g, '')
+  const sessionId = `pair-${Date.now()}`
+
+  res.json({ success: true, sessionId })
+
+  startPairingSession(sessionId, cleanPhone).catch(err => {
+    console.error(`[${sessionId}] 💥 Fatal error: ${err.message}`)
+    sendToClients(sessionId, { error: 'Internal error. Please try again.' })
+    cleanupSession(sessionId)
+  })
+})
+
+// ====================== CLEANUP ======================
+function cleanupSession(sessionId) {
+  const session = activeSessions.get(sessionId)
+  if (session) {
+    if (session.cleanupTimer) clearTimeout(session.cleanupTimer)
+    try { session.sock.end() } catch (_) {}
+    try {
+      fs.rmSync(session.sessionDir, { recursive: true, force: true })
+    } catch (_) {}
+    activeSessions.delete(sessionId)
+  }
+  sseClients.delete(sessionId)
+  console.log(`[${sessionId}] 🗑️ Session cleaned up`)
+}
+
+// ====================== START ======================
+app.listen(PORT, () => {
+  console.log(`🚀 DARK PATH Pairing Site LIVE -> http://localhost:${PORT}`)
+console.log(`⚡️ Railway optimized | Developed by ROJA GRAPHIX`)
+})
